@@ -35,8 +35,8 @@ def analyze_barley_scan(rek_file_path,
         dict: {
             'mean_wall_thickness_mm': average wall thickness (mm),
             'median_wall_thickness_mm': median wall thickness (mm),
-            'mean_per_mm_intensity': average per-mm pixel intensity,
-            'median_per_mm_intensity': median per-mm pixel intensity
+            'mean_per_mm_intensity': average pixel density (mean intensity),
+            'median_per_mm_intensity': median pixel density
         }
     """
     
@@ -61,9 +61,9 @@ def analyze_barley_scan(rek_file_path,
     # 4. Extract peduncle region
     ped_final = extract_peduncle_mask(vol, z1, z2)
     
-    # 5. Calculate per-mm pixel intensity
-    per_mm_mean, per_mm_median = calculate_per_mm_intensity(
-        vol, ped_final, dz_mm, px_xy_mm
+    # 5. Calculate pixel density (mean intensity)
+    per_mm_mean, per_mm_median = calculate_pixel_density(
+        vol, ped_final, px_xy_mm
     )
     
     # 6. Calculate wall thickness
@@ -242,24 +242,29 @@ def extract_peduncle_mask(vol, z1, z2):
     return ped_final
 
 
-def calculate_per_mm_intensity(vol, ped_mask, dz_mm, px_xy_mm):
+def calculate_pixel_density(vol, ped_mask, px_xy_mm):
     """
-    Calculate per-mm pixel intensity
-    Exact copy from Cell 11 of the notebook
+    Calculate mean pixel density (average pixel intensity)
+    
+    Updated algorithm:
+    - Computes mean pixel intensity per slice (density = pixel_sum / pixel_count)
+    - Filters out slices with abnormal cross-sectional area
+    - Returns average density across valid slices
     """
     ped_mask = ped_mask.astype(bool)
     Z = vol.shape[0]
 
     # ---- per-slice stats inside peduncle ----
     area_px = ped_mask.sum(axis=(1, 2))  # per-slice area (pixels)
-    int_sum = np.zeros(Z, dtype=np.float64)  # per-slice integrated intensity (sum)
+    mean_density = np.zeros(Z, dtype=np.float64)  # per-slice mean density
     has_ped = area_px > 0
 
     for z in np.flatnonzero(has_ped):
         m = ped_mask[z]
-        int_sum[z] = vol[z][m].sum()
+        # Calculate mean density = sum(pixel_values) / count(pixels)
+        mean_density[z] = vol[z][m].mean()
 
-    # ---- slice-level outlier removal by area (IQR) ----
+    # ---- slice-level outlier removal by area (MAD) ----
     area_mm2 = area_px * (px_xy_mm**2)
     a = area_mm2[has_ped]
     med = np.median(a)
@@ -267,16 +272,12 @@ def calculate_per_mm_intensity(vol, ped_mask, dz_mm, px_xy_mm):
     keep = np.abs(area_mm2 - med) < 2 * mad
     valid = has_ped & keep
 
-    # ---- per-mm intensity curve on the kept slices ----
-    per_mm_intensity = np.zeros(Z, dtype=np.float64)
+    # ---- summary metrics on the kept slices ----
     sel = np.flatnonzero(valid)
-    per_mm_intensity[sel] = int_sum[sel] / dz_mm
+    density_mean = mean_density[sel].mean() if sel.size else 0.0
+    density_median = np.median(mean_density[sel]) if sel.size else 0.0
 
-    # ---- summary metric (one number) ----
-    per_mm_mean = per_mm_intensity[sel].mean() if sel.size else 0.0
-    per_mm_median = np.median(per_mm_intensity[sel]) if sel.size else 0.0
-
-    return per_mm_mean, per_mm_median
+    return density_mean, density_median
 
 
 def calculate_wall_thickness(ped_mask, px_xy_mm):
@@ -348,5 +349,5 @@ if __name__ == "__main__":
     print("\n=== Analysis Results ===")
     print(f"Mean wall thickness: {results['mean_wall_thickness_mm']:.3f} mm")
     print(f"Median wall thickness: {results['median_wall_thickness_mm']:.3f} mm")
-    print(f"Mean per-mm pixel intensity: {results['mean_per_mm_intensity']:.2f}")
-    print(f"Median per-mm pixel intensity: {results['median_per_mm_intensity']:.2f}")
+    print(f"Mean pixel density: {results['mean_per_mm_intensity']:.2f}")
+    print(f"Median pixel density: {results['median_per_mm_intensity']:.2f}")
